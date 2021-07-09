@@ -1,0 +1,265 @@
+"""
+Author: Y. Ahmed-Braimah
+--- Phylogeny bulding pipeline from whole genomes
+"""
+
+import json
+import os
+import re
+import pandas as pd
+from os.path import join, basename, dirname
+from os import getcwd
+from subprocess import check_output
+from snakemake.utils import R
+
+##--------------------------------------------------------------------------------------##
+## Functions
+##--------------------------------------------------------------------------------------##
+
+# To print process messages
+def message(x):
+  print()
+
+# To remove suffix from a string
+def rstrip(text, suffix):
+    if not text.endswith(suffix):
+        return text
+    return text[:len(text)-len(suffix)]
+
+## define environment variables
+
+##--------------------------------------------------------------------------------------##
+## Global config files:
+##--------------------------------------------------------------------------------------##
+
+configfile: 'config.yml'
+
+# Full path to an uncompressed FASTA file with all chromosome sequences.
+ref_exons = config['REF_EXONS']
+exon_list = config['EXON_LIST']
+exon_lengths = config['EXON_LENGTHS']
+genomes_ann = config['GENOMES_ANN']
+species_list = config['SPECIES_LIST']
+ref_fasta = config['REF_FASTA']
+ref_gtf = config['REF_GTF']
+
+EXONS = pd.read_table(exon_list).set_index("exons", drop=False) #maybe we should drop this? or make true false?
+
+r_script = config['R_script']
+
+FILES = json.load(open(config['GENOMES_JSON']))
+GENOMES = sorted(FILES.keys())
+
+OUT_DIR = config['OUT_DIR']
+
+db_ends = ["nhr","nin","nsq"]
+
+## Create the final output directory if it doesn't already exist
+if not os.path.exists(OUT_DIR):
+            os.makedirs(OUT_DIR)
+
+##--------------------------------------------------------------------------------------##
+#
+# _____ _             _               _               _
+#|  ___(_)_ __   __ _| |   ___  _   _| |_ _ __  _   _| |_ ___
+#| |_  | | '_ \ / _` | |  / _ \| | | | __| '_ \| | | | __/ __|
+#|  _| | | | | | (_| | | | (_) | |_| | |_| |_) | |_| | |_\__ \
+#|_|   |_|_| |_|\__,_|_|  \___/ \__,_|\__| .__/ \__,_|\__|___/
+#                                        |_|
+##--------------------------------------------------------------------------------------##
+
+## Final expected output(s)
+rule all:
+    input:
+        #expand(join(OUT_DIR, 'exon_alignment_files', '{exon}.msa'), exon = EXONS.index)
+        exons_txt = join(OUT_DIR,'exons.txt'),
+        exons_fasta = join(OUT_DIR,'exons.fasta'),
+        exons_length = join(OUT_DIR, 'exons.length')
+
+
+##--------------------------------------------------------------------------------------##
+##--------------------------------------------------------------------------------------##
+
+#Rule to extract CDS exons
+rule extractCDS:
+    input:
+        fasta = ref_fasta,
+        gtf = ref_gtf
+    output:
+        exons_txt = join(OUT_DIR,'exons.txt'),
+        exons_fasta = join(OUT_DIR,'exons.fasta'),
+        exons_length = join(OUT_DIR, 'exons.length')
+    threads:
+        2
+    resources:
+        mem_mb= 2000
+    message:
+        "extracting CDS exons list, fasta file, and lengths"
+    run:
+        shell('bash /home/mihtet/myGitRep/Anopheles/Phylogenies_with_exons/scripts/extract_CDSexons.sh')
+
+
+
+## Rule to map PE reads with HISAT2
+rule makeblastdb:
+    input:
+        lambda wildcards: FILES[wildcards.genome]
+    output:
+        blastdb = expand(join(OUT_DIR, 'blastdb', '{{genome}}', '{{genome}}.{n}'), n = db_ends)
+    log:
+        join(OUT_DIR, 'blastdb', '{genome}', '{genome}.log')
+    benchmark:
+        join(OUT_DIR, 'blastdb', '{genome}', '{genome}.benchmark.tsv')
+    threads:
+        2
+    resources:
+        mem_mb=4000
+    message:
+        """--- Building BLASTn database for {wildcards.genome} """
+    run:
+        shell('makeblastdb'
+                ' -in {input}'
+                ' -dbtype nucl'
+                ' 2>{log}')
+        shell('mv {input}.* ' + join(OUT_DIR, 'blastdb', '{wildcards.genome}'))
+
+##--------------------------------------------------------------------------------------##
+##--------------------------------------------------------------------------------------##
+
+rule blastn:
+    input:
+        blastdb = expand(join(OUT_DIR, 'blastdb', '{{genome}}', '{{genome}}.{n}'), n =db_ends)
+    params:
+        ref = ref_exons
+    output:
+        blastr1 = join(OUT_DIR, 'BLAST_results', '{genome}', '{genome}.outfmt6')
+    log:
+        join(OUT_DIR, 'BLAST_results', '{genome}', '{genome}.log')
+    benchmark:
+        join(OUT_DIR, 'BLAST_results', '{genome}', '{genome}.benchmark.tsv')
+    threads:
+        8
+    resources:
+        mem_mb=16000
+    message:
+        """--- Searching orthologous exons against {wildcards.genome} """
+    run:
+        shell('blastn'
+                ' -query {params.ref}'
+                ' -db ' + join(OUT_DIR, 'blastdb', '{wildcards.genome}', '{wildcards.genome}') +
+                ' -outfmt 6'
+                ' -num_threads 4'
+                ' -max_target_seqs 1'
+                ' | sed "s/$/\tD.melanogaster\t{wildcards.genome}/g"'
+                ' > {output.blastr1}'
+                ' 2>{log}')
+
+##--------------------------------------------------------------------------------------##
+##--------------------------------------------------------------------------------------##
+
+rule combine_blast_results:
+    input:
+        expand(join(OUT_DIR, 'BLAST_results', '{genome}', '{genome}.outfmt6'), genome = GENOMES)
+    output:
+        blastr = join(OUT_DIR, 'BLAST_results', 'all_blast_results.txt')
+    threads:
+        2
+    resources:
+        mem_mb=4000
+    message:
+        """--- Combining all BLASTn results into one table """
+    run:
+        shell('cat ' + join(OUT_DIR, 'BLAST_results', '*', '*.outfmt6') + ' > {output.blastr}')
+
+##--------------------------------------------------------------------------------------##
+##--------------------------------------------------------------------------------------##
+
+rule fix_blast_coordinates:
+    input:
+        blastr = join(OUT_DIR, 'BLAST_results', 'all_blast_results.txt')
+    params:
+        exon_list = exon_list,
+        exon_lengths = exon_lengths,
+        genomes_ann = genomes_ann,
+        r_script = r_script
+    output:
+        blastr = join(OUT_DIR, 'BLAST_results', 'processed_blast_results.txt'),
+        density = join(OUT_DIR, 'BLAST_results', 'processed_blast_results_densityPlot.png'),
+        specRep = join(OUT_DIR, 'BLAST_results', 'processed_blast_results_secRep.png')
+    threads:
+        8
+    resources:
+        mem_mb=16000
+    message:
+        """--- Processing coordinates with R """
+    run:
+        shell('Rscript {params.r_script} {input.blastr} {params.exon_lengths} {params.genomes_ann} {output.density} {output.specRep} {output.blastr}')
+
+##--------------------------------------------------------------------------------------##
+##--------------------------------------------------------------------------------------##
+
+rule extract_orth_seqs:
+    input:
+        blastr = join(OUT_DIR, 'BLAST_results', 'processed_blast_results.txt')
+    params:
+        ref_exons = ref_exons
+    output:
+        exons = join(OUT_DIR, 'exon_fasta_files', '{exon}.fasta')
+    threads:
+        8
+    resources:
+        mem_mb=16000
+    message:
+        """--- Extracting exon sequences for CDS exon {wildcards.exon}"""
+    run:
+        shell('faOneRecord {params.ref_exons} {wildcards.exon} | sed "s/>.*/>Reference_species/g" > {output.exons}')
+        shell('awk \'$20 == "+"\' {input.blastr} | grep {wildcards.exon} | cut -f 2,20,14,25,26,17 > {wildcards.exon}.plus_hits')
+        shell('awk \'{{print "samtools faidx genomes/"$2" "$1":"$5"-"$6" | sed \\\"s/>.*/>"$3"/g\\\""}}\' {wildcards.exon}.plus_hits > {wildcards.exon}.samFaidx.plus.sh')
+        shell('awk \'$20 == "-"\' {input.blastr} | grep {wildcards.exon} | cut -f 2,20,14,25,26,17  > {wildcards.exon}.minus_hits')
+        shell('awk \'{{print "samtools faidx -i genomes/"$2" "$1":"$6"-"$5" | sed \\\"s/>.*/>"$3"/g\\\""}}\' {wildcards.exon}.minus_hits > {wildcards.exon}.samFaidx.minus.sh')
+        shell('chmod u+x {wildcards.exon}.samFaidx.plus.sh {wildcards.exon}.samFaidx.minus.sh')
+        shell('./{wildcards.exon}.samFaidx.plus.sh >> {output.exons}')
+        shell('./{wildcards.exon}.samFaidx.minus.sh >> {output.exons}')
+        shell('rm {wildcards.exon}.samFaidx.plus.sh {wildcards.exon}.samFaidx.minus.sh {wildcards.exon}.plus_hits {wildcards.exon}.minus_hits')
+
+##--------------------------------------------------------------------------------------##
+##--------------------------------------------------------------------------------------##
+
+rule align_exons:
+    input:
+        exons = join(OUT_DIR, 'exon_fasta_files', '{exon}.fasta')
+    params:
+        species_list = species_list
+    output:
+        msa = join(OUT_DIR, 'exon_alignment_files', '{exon}.msa')
+    threads:
+        8
+    resources:
+        mem_mb=16000
+    message:
+        """--- Cleaning and aligning exon {wildcards.exon}"""
+    run:
+        shell('grep ">" {input.exons} | sed "s/>//g" | sort -u | compare_lists.sh - {params.species_list} | sed "s/^/>/g" | sed "s/$/\\nN/g" | cat {input.exons} - > {wildcards.exon}.filled')
+        shell('seqkit rmdup < {wildcards.exon}.filled > {wildcards.exon}.filled.dupsrem')
+        shell('muscle -maxiters 1 -diags -in {wildcards.exon}.filled.dupsrem -out {output.msa}')
+        shell('rm {wildcards.exon}.filled {wildcards.exon}.filled.dupsrem')
+
+##--------------------------------------------------------------------------------------##
+##--------------------------------------------------------------------------------------##
+
+rule concatenate_exons:
+    input:
+        expand(join(OUT_DIR, 'exon_alignment_files', '{exon}.msa'), exon = EXONS.index)
+    output:
+        msa = join(OUT_DIR, 'combined_exon_alignments.msa'),
+        phy = join(OUT_DIR, 'combined_exon_alignments.phy')
+    threads:
+        8
+    resources:
+        mem_mb=16000
+    message:
+        """--- Concatenating all exon alignments and converting to phylip format"""
+    run:
+        shell('seqkit concat ' + join(OUT_DIR, 'exon_alignment_files', '*.msa') +
+                ' > {output.msa}')
+        shell('Fasta2Phylip.pl {output.msa} {output.phy}')
