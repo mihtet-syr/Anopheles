@@ -35,9 +35,9 @@ def rstrip(text, suffix):
 configfile: 'config.yml'
 
 # Full path to an uncompressed FASTA file with all chromosome sequences.
-ref_exons = config['REF_EXONS']
-exon_list = config['EXON_LIST']
-exon_lengths = config['EXON_LENGTHS']
+#ref_exons = config['REF_EXONS']
+#exon_list = config['EXON_LIST']
+#exon_lengths = config['EXON_LENGTHS']
 genomes_ann = config['GENOMES_ANN']
 species_list = config['SPECIES_LIST']
 ref_fasta = config['REF_FASTA']
@@ -107,7 +107,7 @@ rule modgtf:
         shell('rm gtf.1-8 gtf.9-10 gtf.exons.gtf')
 
 #Rule to extract CDS fasta and text file
-rule extractCDSfasta_txt
+rule extractCDSfasta_txt:
     input:
         exons_gtf = join(OUT_DIR,'exons.gff'),
         fasta = ref_fasta
@@ -119,19 +119,25 @@ rule extractCDSfasta_txt
     resources:
         mem_mb= 2000
     message:
-        "extracting CDS exons list, fasta file, and lengths"
+        "extracting CDS exons list, fasta file"
     run:
         shell('grep -Po \'Parent=\K.*$\' {input.exons_gtf} > {output.exons_txt}')
         shell('sed -i \'1 i\exons\' {output.exons_txt}')
         shell('gffread {input.exons_gtf} -g {input.fasta} -x {output.exons_fasta}')
 
-rule extractCDSlen
+rule extractCDSlen:
     input:
         exons_fasta = join(OUT_DIR,'exons.fasta')
     output:
         exons_length = join(OUT_DIR, 'exons.length')
+    threads:
+        2
+    resources:
+        mem_mb= 2000
+    message:
+        "extracting CDS lengths"
     run:
-        shell('samtools faidx {input.exons_fasta}')
+        shell('samtools faidx {input.exons_fasta}') #potential environment conflict here
         shell('cut -f 1,2 {input.exons_fasta}.fai > {output.exons_length}')
         
 
