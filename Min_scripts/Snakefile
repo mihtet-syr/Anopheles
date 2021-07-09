@@ -74,21 +74,46 @@ rule all:
         #expand(join(OUT_DIR, 'exon_alignment_files', '{exon}.msa'), exon = EXONS.index)
         exons_txt = join(OUT_DIR,'exons.txt'),
         exons_fasta = join(OUT_DIR,'exons.fasta'),
-        exons_length = join(OUT_DIR, 'exons.length')
+        exons_length = join(OUT_DIR, 'exons.length'),
+        exons_gtf = join(OUT_DIR,'exons.gff')
 
 
 ##--------------------------------------------------------------------------------------##
 ##--------------------------------------------------------------------------------------##
 
-#Rule to extract CDS exons
-rule extractCDS:
+#Rule to create new gtf
+rule modgtf:
     input:
         fasta = ref_fasta,
         gtf = ref_gtf
     output:
+        exons_gtf = join(OUT_DIR,'exons.gff')
+    threads:
+        2
+    resources:
+        mem_mb= 2000
+    message:
+        "creating CDS exons gtf file"
+    run:
+        shell('awk \'$3 == "CDS"\' {input.gtf} | sed "s/;/\t/g"  | cut -f 9,10 > gtf.9-10')
+        shell('sed -i "s/\t/;/g" gtf.9-10')
+        shell('awk \'$3 == "CDS"\' {input.gtf} | cut -f 1-8 > gtf.1-8')
+        shell('paste gtf.1-8 gtf.9-10 > gtf.exons.gtf')
+        shell('awk -F "\t" \'OFS="\t" {{print $1,$2,$3,$4,$5,$6,$7,$8,$9"_"$4"_"$5}}\' gtf.exons.gtf > {output.exons_gtf}')
+        shell('sed -i \'s/"_/_/g\' {output.exons_gtf}')
+        shell('sed -i \'s/"; /;/g\' {output.exons_gtf}')
+        shell('sed -i \'s/ "/=/g\' {output.exons_gtf}')
+        shell('sed -i \'s/transcript_id/Parent/g\' {output.exons_gtf}')
+        shell('rm gtf.1-8 gtf.9-10 gtf.exons.gtf')
+
+#Rule to extract CDS fasta and text file
+rule extractCDSfasta_txt
+    input:
+        exons_gtf = join(OUT_DIR,'exons.gff'),
+        fasta = ref_fasta
+    output:
         exons_txt = join(OUT_DIR,'exons.txt'),
         exons_fasta = join(OUT_DIR,'exons.fasta'),
-        exons_length = join(OUT_DIR, 'exons.length')
     threads:
         2
     resources:
@@ -96,8 +121,19 @@ rule extractCDS:
     message:
         "extracting CDS exons list, fasta file, and lengths"
     run:
-        shell('bash /home/mihtet/myGitRep/Anopheles/Phylogenies_with_exons/scripts/extract_CDSexons.sh')
+        shell('grep -Po \'Parent=\K.*$\' {input.exons_gtf} > {output.exons_txt}')
+        shell('sed -i \'1 i\exons\' {output.exons_txt}')
+        shell('gffread {input.exons_gtf} -g {input.fasta} -x {output.exons_fasta}')
 
+rule extractCDSlen
+    input:
+        exons_fasta = join(OUT_DIR,'exons.fasta')
+    output:
+        exons_length = join(OUT_DIR, 'exons.length')
+    run:
+        shell('samtools faidx {input.exons_fasta}')
+        shell('cut -f 1,2 {input.exons_fasta}.fai > {output.exons_length}')
+        
 
 
 ## Rule to map PE reads with HISAT2
