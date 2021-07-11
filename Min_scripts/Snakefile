@@ -36,7 +36,7 @@ configfile: 'config.yml'
 
 # Full path to an uncompressed FASTA file with all chromosome sequences.
 #ref_exons = config['REF_EXONS']
-#exon_list = config['EXON_LIST']
+exon_list = config['EXON_LIST']
 #exon_lengths = config['EXON_LENGTHS']
 genomes_ann = config['GENOMES_ANN']
 species_list = config['SPECIES_LIST']
@@ -71,11 +71,11 @@ if not os.path.exists(OUT_DIR):
 ## Final expected output(s)
 rule all:
     input:
-        #expand(join(OUT_DIR, 'exon_alignment_files', '{exon}.msa'), exon = EXONS.index)
-        exons_txt = join(OUT_DIR,'exons.txt'),
-        exons_fasta = join(OUT_DIR,'exons.fasta'),
-        exons_length = join(OUT_DIR, 'exons.length'),
-        exons_gtf = join(OUT_DIR,'exons.gff')
+        expand(join(OUT_DIR, 'exon_alignment_files', '{exon}.msa'), exon = EXONS.index)
+        #exons_txt = join(OUT_DIR,'exons.txt'),
+        #exons_fasta = join(OUT_DIR,'exons.fasta'),
+        #exons_length = join(OUT_DIR, 'exons.length'),
+        #exons_gtf = join(OUT_DIR,'exons.gff')
 
 
 ##--------------------------------------------------------------------------------------##
@@ -170,9 +170,10 @@ rule makeblastdb:
 
 rule blastn:
     input:
-        blastdb = expand(join(OUT_DIR, 'blastdb', '{{genome}}', '{{genome}}.{n}'), n =db_ends)
-    params:
-        ref = ref_exons
+        blastdb = expand(join(OUT_DIR, 'blastdb', '{{genome}}', '{{genome}}.{n}'), n =db_ends),
+        ref = rules.extractCDSfasta_txt.output.exons_fasta
+    #params:
+        #ref = ref_exons
     output:
         blastr1 = join(OUT_DIR, 'BLAST_results', '{genome}', '{genome}.outfmt6')
     log:
@@ -187,7 +188,7 @@ rule blastn:
         """--- Searching orthologous exons against {wildcards.genome} """
     run:
         shell('blastn'
-                ' -query {params.ref}'
+                ' -query {input.ref}'
                 ' -db ' + join(OUT_DIR, 'blastdb', '{wildcards.genome}', '{wildcards.genome}') +
                 ' -outfmt 6'
                 ' -num_threads 4'
@@ -218,10 +219,12 @@ rule combine_blast_results:
 
 rule fix_blast_coordinates:
     input:
-        blastr = join(OUT_DIR, 'BLAST_results', 'all_blast_results.txt')
+        blastr = join(OUT_DIR, 'BLAST_results', 'all_blast_results.txt'),
+        exon_list = rules.extractCDSfasta_txt.output.exons_txt,
+        exon_lengths = rules.extractCDSlen.output.exons_length
     params:
-        exon_list = exon_list,
-        exon_lengths = exon_lengths,
+        #exon_list = exon_list,
+        #exon_lengths = exon_lengths,
         genomes_ann = genomes_ann,
         r_script = r_script
     output:
@@ -235,16 +238,17 @@ rule fix_blast_coordinates:
     message:
         """--- Processing coordinates with R """
     run:
-        shell('Rscript {params.r_script} {input.blastr} {params.exon_lengths} {params.genomes_ann} {output.density} {output.specRep} {output.blastr}')
+        shell('Rscript {params.r_script} {input.blastr} {input.exon_lengths} {params.genomes_ann} {output.density} {output.specRep} {output.blastr}')
 
 ##--------------------------------------------------------------------------------------##
 ##--------------------------------------------------------------------------------------##
 
 rule extract_orth_seqs:
     input:
-        blastr = join(OUT_DIR, 'BLAST_results', 'processed_blast_results.txt')
-    params:
-        ref_exons = ref_exons
+        blastr = join(OUT_DIR, 'BLAST_results', 'processed_blast_results.txt'),
+        ref = rules.extractCDSfasta_txt.output.exons_fasta
+    #params:
+    #    ref_exons = ref_exons
     output:
         exons = join(OUT_DIR, 'exon_fasta_files', '{exon}.fasta')
     threads:
@@ -254,7 +258,7 @@ rule extract_orth_seqs:
     message:
         """--- Extracting exon sequences for CDS exon {wildcards.exon}"""
     run:
-        shell('faOneRecord {params.ref_exons} {wildcards.exon} | sed "s/>.*/>Reference_species/g" > {output.exons}')
+        shell('faOneRecord {input.ref} {wildcards.exon} | sed "s/>.*/>Reference_species/g" > {output.exons}')
         shell('awk \'$20 == "+"\' {input.blastr} | grep {wildcards.exon} | cut -f 2,20,14,25,26,17 > {wildcards.exon}.plus_hits')
         shell('awk \'{{print "samtools faidx genomes/"$2" "$1":"$5"-"$6" | sed \\\"s/>.*/>"$3"/g\\\""}}\' {wildcards.exon}.plus_hits > {wildcards.exon}.samFaidx.plus.sh')
         shell('awk \'$20 == "-"\' {input.blastr} | grep {wildcards.exon} | cut -f 2,20,14,25,26,17  > {wildcards.exon}.minus_hits')
