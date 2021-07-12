@@ -36,14 +36,14 @@ configfile: 'config.yml'
 
 # Full path to an uncompressed FASTA file with all chromosome sequences.
 #ref_exons = config['REF_EXONS']
-exon_list = config['EXON_LIST']
+#exon_list = config['EXON_LIST']
 #exon_lengths = config['EXON_LENGTHS']
 genomes_ann = config['GENOMES_ANN']
 species_list = config['SPECIES_LIST']
 ref_fasta = config['REF_FASTA']
 ref_gtf = config['REF_GTF']
 
-EXONS = pd.read_table(exon_list).set_index("exons", drop=False) #maybe we should drop this? or make true false?
+#EXONS = pd.read_table(exon_list).set_index("exons", drop=False) 
 
 r_script = config['R_script']
 
@@ -71,7 +71,8 @@ if not os.path.exists(OUT_DIR):
 ## Final expected output(s)
 rule all:
     input:
-        expand(join(OUT_DIR, 'exon_alignment_files', '{exon}.msa'), exon = EXONS.index)
+        #expand(join(OUT_DIR, 'exon_alignment_files', '{exon}.msa'), exon = EXONS.index)
+        expand(join(OUT_DIR, 'exon_alignment_files', '{exon}.msa'), exon = pd.read_table(join(OUT_DIR,'exons.txt')).set_index("exons", drop=False).index)
         #exons_txt = join(OUT_DIR,'exons.txt'),
         #exons_fasta = join(OUT_DIR,'exons.fasta'),
         #exons_length = join(OUT_DIR, 'exons.length'),
@@ -124,6 +125,7 @@ rule extractCDSfasta_txt:
         shell('grep -Po \'Parent=\K.*$\' {input.exons_gtf} > {output.exons_txt}')
         shell('sed -i \'1 i\exons\' {output.exons_txt}')
         shell('gffread {input.exons_gtf} -g {input.fasta} -x {output.exons_fasta}')
+
 
 rule extractCDSlen:
     input:
@@ -295,7 +297,7 @@ rule align_exons:
 
 rule concatenate_exons:
     input:
-        expand(join(OUT_DIR, 'exon_alignment_files', '{exon}.msa'), exon = EXONS.index)
+        expand(join(OUT_DIR, 'exon_alignment_files', '{exon}.msa'), exon = pd.read_table(join(OUT_DIR,'exons.txt')).set_index("exons", drop=False).index)
     output:
         msa = join(OUT_DIR, 'combined_exon_alignments.msa'),
         phy = join(OUT_DIR, 'combined_exon_alignments.phy')
